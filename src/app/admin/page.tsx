@@ -327,11 +327,6 @@ interface StandaloneSourceScript {
   code: string;
   createdAt: number;
   updatedAt: number;
-  history: Array<{
-    version: string;
-    code: string;
-    updatedAt: number;
-  }>;
 }
 
 // 新增站点配置类型
@@ -5991,7 +5986,6 @@ const VideoSourceScriptLab = () => {
     description: string;
     code: string;
     enabled: boolean;
-    history: StandaloneSourceScript['history'];
     version?: string;
     updatedAt?: number;
   }>({
@@ -6000,7 +5994,6 @@ const VideoSourceScriptLab = () => {
     description: '',
     code: '',
     enabled: true,
-    history: [],
   });
   const [testHook, setTestHook] = useState<'getSources' | 'search' | 'recommend' | 'detail' | 'resolvePlayUrl'>('getSources');
   const [testPayload, setTestPayload] = useState(
@@ -6017,7 +6010,6 @@ const VideoSourceScriptLab = () => {
         description: '',
         code: template,
         enabled: true,
-        history: [],
       });
       setSelectedScriptId(null);
       return;
@@ -6030,7 +6022,6 @@ const VideoSourceScriptLab = () => {
       description: script.description || '',
       code: script.code,
       enabled: script.enabled,
-      history: script.history || [],
       version: script.version,
       updatedAt: script.updatedAt,
     });
@@ -6067,7 +6058,6 @@ const VideoSourceScriptLab = () => {
           description: '',
           code: data.template || '',
           enabled: true,
-          history: [],
         });
         setSelectedScriptId(null);
       }
@@ -6090,7 +6080,6 @@ const VideoSourceScriptLab = () => {
       description: '',
       code: template,
       enabled: true,
-      history: [],
     });
     setTestOutput('');
   };
@@ -6240,30 +6229,6 @@ const VideoSourceScriptLab = () => {
       await loadScripts(id);
     }).catch((error) => {
       showError(error instanceof Error ? error.message : '更新失败', showAlert);
-    });
-  };
-
-  const handleRestore = async (version: string) => {
-    if (!editor.id) return;
-
-    await withLoading(`restoreSourceScript_${editor.id}`, async () => {
-      const response = await fetch('/api/admin/source-script', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'restore',
-          id: editor.id,
-          version,
-        }),
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(data.error || '回滚失败');
-      }
-      showSuccess('已回滚到历史版本', showAlert);
-      await loadScripts(editor.id);
-    }).catch((error) => {
-      showError(error instanceof Error ? error.message : '回滚失败', showAlert);
     });
   };
 
@@ -6524,36 +6489,6 @@ const VideoSourceScriptLab = () => {
               </pre>
             </div>
           </div>
-
-          {editor.history.length > 0 && (
-            <div className='space-y-3'>
-              <div className='text-sm font-medium text-gray-700 dark:text-gray-300'>
-                历史版本
-              </div>
-              <div className='space-y-2'>
-                {editor.history.map((history) => (
-                  <div
-                    key={history.version}
-                    className='flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900'
-                  >
-                    <div className='text-sm text-gray-700 dark:text-gray-300'>
-                      <div className='font-medium'>{history.version}</div>
-                      <div className='text-xs text-gray-500 dark:text-gray-400'>
-                        {new Date(history.updatedAt).toLocaleString('zh-CN')}
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => handleRestore(history.version)}
-                      disabled={isLoading(`restoreSourceScript_${editor.id}`)}
-                      className={buttonStyles.secondarySmall}
-                    >
-                      回滚到此版本
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
       </div>
 

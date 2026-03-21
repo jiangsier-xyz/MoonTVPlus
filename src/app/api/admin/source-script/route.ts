@@ -9,7 +9,6 @@ import {
   getDefaultSourceScriptTemplate,
   importSourceScripts,
   listSourceScripts,
-  restoreSourceScriptHistory,
   saveSourceScript,
   testSourceScript,
   toggleSourceScriptEnabled,
@@ -109,17 +108,6 @@ export async function POST(request: NextRequest) {
       }
       case 'toggle_enabled': {
         const item = await toggleSourceScriptEnabled(body.id);
-        return NextResponse.json(
-          { ok: true, item },
-          {
-            headers: {
-              'Cache-Control': 'no-store',
-            },
-          }
-        );
-      }
-      case 'restore': {
-        const item = await restoreSourceScriptHistory(body.id, body.version);
         return NextResponse.json(
           { ok: true, item },
           {

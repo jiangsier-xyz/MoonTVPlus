@@ -2117,7 +2117,7 @@ function PlayPageClient() {
       episodeIndex >= detailData.episodes.length
     ) {
       // 这类源统一先走详情懒加载，如果 episodes 为空则跳过
-      if (isLazyDetailSource(detailData?.source) && (!detailData.episodes || detailData.episodes.length === 0)) {
+      if (isLazyDetailSource(detailData?.source) && (!detailData?.episodes || detailData.episodes.length === 0)) {
         return;
       }
       setVideoUrl('');

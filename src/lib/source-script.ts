@@ -6,14 +6,14 @@ import { nanoid } from 'nanoid';
 import { db } from '@/lib/db';
 
 const SOURCE_SCRIPT_REGISTRY_KEY = 'source-script:registry';
-const MAX_HISTORY_ITEMS = 10;
 const DEFAULT_TIMEOUT_MS = 20000;
 
-export interface SourceScriptVersion {
-  version: string;
-  code: string;
-  updatedAt: number;
-}
+// ---- 内存缓存 ----
+let _registryCache: { data: SourceScriptRegistry; ts: number } | null = null;
+const REGISTRY_CACHE_TTL_MS = 5_000;
+
+const _compiledCache = new Map<string, any>();
+const MAX_COMPILED_CACHE_SIZE = 50;
 
 export interface SourceScriptRecord {
   id: string;
@@ -25,7 +25,6 @@ export interface SourceScriptRecord {
   code: string;
   createdAt: number;
   updatedAt: number;
-  history: SourceScriptVersion[];
 }
 
 export interface SourceScriptImportItem {
@@ -147,23 +146,36 @@ function buildEmptyRegistry(): SourceScriptRegistry {
 }
 
 async function loadRegistry(): Promise<SourceScriptRegistry> {
+  if (_registryCache && Date.now() - _registryCache.ts < REGISTRY_CACHE_TTL_MS) {
+    return _registryCache.data;
+  }
+
   const raw = await db.getGlobalValue(SOURCE_SCRIPT_REGISTRY_KEY);
   if (!raw) {
-    return buildEmptyRegistry();
+    const empty = buildEmptyRegistry();
+    _registryCache = { data: empty, ts: Date.now() };
+    return empty;
   }
 
   try {
     const parsed = JSON.parse(raw) as SourceScriptRegistry;
     if (!parsed || !Array.isArray(parsed.items)) {
-      return buildEmptyRegistry();
+      const empty = buildEmptyRegistry();
+      _registryCache = { data: empty, ts: Date.now() };
+      return empty;
     }
+    _registryCache = { data: parsed, ts: Date.now() };
     return parsed;
   } catch {
-    return buildEmptyRegistry();
+    const empty = buildEmptyRegistry();
+    _registryCache = { data: empty, ts: Date.now() };
+    return empty;
   }
 }
 
 async function saveRegistry(registry: SourceScriptRegistry) {
+  _registryCache = null;
+  _compiledCache.clear();
   await db.setGlobalValue(
     SOURCE_SCRIPT_REGISTRY_KEY,
     JSON.stringify(registry)
@@ -444,12 +456,27 @@ async function getEnabledSourceScriptByKey(key: string) {
   return item;
 }
 
+function getOrCompileScript(script: SourceScriptRecord) {
+  const cacheKey = `${script.id}:${script.version}`;
+  const cached = _compiledCache.get(cacheKey);
+  if (cached) return cached;
+
+  const factory = createScriptFactory(script.code);
+  const compiled = normalizeScript(factory());
+
+  if (_compiledCache.size >= MAX_COMPILED_CACHE_SIZE) {
+    const firstKey = _compiledCache.keys().next().value;
+    if (firstKey) _compiledCache.delete(firstKey);
+  }
+  _compiledCache.set(cacheKey, compiled);
+  return compiled;
+}
+
 async function compileSourceScript(
   script: SourceScriptRecord,
   configValues?: Record<string, string>
 ) {
-  const factory = createScriptFactory(script.code);
-  const compiled = normalizeScript(factory());
+  const compiled = getOrCompileScript(script);
   const context = await createScriptContext(script, configValues);
   return {
     compiled,
@@ -536,12 +563,6 @@ export async function saveSourceScript(input: {
   }
 
   if (existing) {
-    existing.history.unshift({
-      version: existing.version,
-      code: existing.code,
-      updatedAt: existing.updatedAt,
-    });
-    existing.history = existing.history.slice(0, MAX_HISTORY_ITEMS);
     existing.key = input.key;
     existing.name = input.name;
     existing.description = input.description || '';
@@ -563,7 +584,6 @@ export async function saveSourceScript(input: {
     version: getNowVersion(),
     createdAt: now,
     updatedAt: now,
-    history: [],
   };
 
   registry.items.unshift(created);
@@ -587,12 +607,6 @@ export async function importSourceScripts(items: SourceScriptImportItem[]) {
     const existing = registry.items.find((record) => record.key === item.key);
 
     if (existing) {
-      existing.history.unshift({
-        version: existing.version,
-        code: existing.code,
-        updatedAt: existing.updatedAt,
-      });
-      existing.history = existing.history.slice(0, MAX_HISTORY_ITEMS);
       existing.name = item.name;
       existing.description = item.description || '';
       existing.code = item.code;
@@ -613,7 +627,6 @@ export async function importSourceScripts(items: SourceScriptImportItem[]) {
       version: getNowVersion(),
       createdAt: now,
       updatedAt: now,
-      history: [],
     };
     registry.items.unshift(created);
     imported.push(created);
@@ -645,31 +658,6 @@ export async function toggleSourceScriptEnabled(id: string) {
   return target;
 }
 
-export async function restoreSourceScriptHistory(id: string, version: string) {
-  const registry = await loadRegistry();
-  const target = registry.items.find((item) => item.id === id);
-  if (!target) {
-    throw new Error('脚本不存在');
-  }
-
-  const history = target.history.find((item) => item.version === version);
-  if (!history) {
-    throw new Error('历史版本不存在');
-  }
-
-  target.history.unshift({
-    version: target.version,
-    code: target.code,
-    updatedAt: target.updatedAt,
-  });
-  target.history = target.history.slice(0, MAX_HISTORY_ITEMS);
-  target.code = history.code;
-  target.version = getNowVersion();
-  target.updatedAt = Date.now();
-  await saveRegistry(registry);
-  return target;
-}
-
 export async function testSourceScript(input: {
   code: string;
   hook: SourceScriptHook;
@@ -679,6 +667,7 @@ export async function testSourceScript(input: {
   configValues?: Record<string, string>;
 }): Promise<SourceScriptTestResult> {
   const startedAt = Date.now();
+  let collectedLogs: string[] = [];
   try {
     const tempScript: SourceScriptRecord = {
       id: 'test-script',
@@ -690,7 +679,6 @@ export async function testSourceScript(input: {
       code: input.code,
       createdAt: startedAt,
       updatedAt: startedAt,
-      history: [],
     };
 
     const factory = createScriptFactory(input.code);
@@ -701,6 +689,7 @@ export async function testSourceScript(input: {
     }
 
     const { ctx, logs } = await createScriptContext(tempScript, input.configValues);
+    collectedLogs = logs;
     const result = await withTimeout(
       Promise.resolve(hook(ctx, input.payload)),
       DEFAULT_TIMEOUT_MS
@@ -717,7 +706,7 @@ export async function testSourceScript(input: {
     return {
       ok: false,
       durationMs: Date.now() - startedAt,
-      logs: [],
+      logs: collectedLogs,
       error: (error as Error).message,
     };
   }
@@ -875,6 +864,17 @@ export async function resolveScriptDetailPlaybacks(input: {
         },
       ];
 
+  // 预检查：编译一次脚本，判断是否实现了 resolvePlayUrl
+  const script = await getEnabledSourceScriptByKey(input.scriptKey);
+  const compiled = getOrCompileScript(script);
+
+  if (typeof compiled.resolvePlayUrl !== 'function') {
+    return input.result;
+  }
+
+  // 已实现 resolvePlayUrl，创建一个 context 复用
+  const { ctx } = await createScriptContext(script);
+
   const resolvedPlaybacks = await Promise.all(
     playbacks.map(async (playback: any) => {
       const playbackSourceId = String(playback.sourceId || input.sourceId);
@@ -889,23 +889,19 @@ export async function resolveScriptDetailPlaybacks(input: {
               : String(episode?.playUrl || episode?.url || '');
 
           try {
-            const execution = await executeSavedSourceScript({
-              key: input.scriptKey,
-              hook: 'resolvePlayUrl',
-              payload: {
-                playUrl,
-                sourceId: playbackSourceId,
-                lineId,
-                episodeIndex: index,
-              },
-            });
-
-            return execution.result?.url || playUrl;
-          } catch (error) {
-            const message = error instanceof Error ? error.message : '';
-            if (message.includes('未实现 resolvePlayUrl hook')) {
-              return playUrl;
-            }
+            const result = await withTimeout(
+              Promise.resolve(
+                compiled.resolvePlayUrl(ctx, {
+                  playUrl,
+                  sourceId: playbackSourceId,
+                  lineId,
+                  episodeIndex: index,
+                })
+              ),
+              DEFAULT_TIMEOUT_MS
+            );
+            return result?.url || playUrl;
+          } catch {
             return playUrl;
           }
         })
