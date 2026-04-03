@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 // 自动匹配 API 路由
 import { NextRequest, NextResponse } from 'next/server';
 

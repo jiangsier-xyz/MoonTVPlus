@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 import { nanoid } from 'nanoid';
 import { NextRequest, NextResponse } from 'next/server';
 
